@@ -9,22 +9,92 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+## Setting up R
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+Install the necessary packages and load their libraries
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+```{r warning=FALSE, message=FALSE}
+pkgs_needed = c("Rpdb", "rgl", "tidyverse", "spatstat", "Biostrings",
+                "RColorBrewer", "magrittr", "plyr", "reshape2")
+letsinstall = setdiff(pkgs_needed, installed.packages()) 
+if (length(letsinstall) > 0) {
+  BiocManager::install(setdiff(pkgs_needed, installed.packages()))
+}
 
-```{r cars}
-summary(cars)
+library("Rpdb")
+library("rgl")
+#library("bio3d")
+library("dplyr")
+library("spatstat")
+
 ```
 
-## Including Plots
+## Getting alignment into R
 
-You can also embed plots, for example:
+The amino acid alignment is loaded in a silly format, will improve this later. The format is a csv file where each line is of the format "Seqname,site1,site2,site3,...,siten" and indels are represented with dashes.
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+``` {r alignment}
+#library(Biostrings)
+#alignment <- readAAMultipleAlignment(filepath = "C:/Users/Hannah/Documents/Github/mutationmap/cyclase_alignment.fasta")
+
+aliframe = read.csv(file = "C:/Users/Hannah/Documents/Github/mutationmap/tree4_andanc.csv")
+
+#transpose the dataframe prepare for aligning to protein structure
+longali = t(aliframe)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Read in protein structure using Rpdb
+
+```{r pdb file}
+shc <- read.pdb("C:/Users/Hannah/Documents/Github/mutationmap/1sqc.pdb")
+
+#calculate the center of geometry of each residue
+centers <- centres(shc$atoms, unsplit=TRUE) 
+
+#make a table of the residue sequence number, residue name, and position of its center of geometry in Cartesian space
+centers2 = tibble(recname=shc$atoms$recname, resid=shc$atoms$resid, resname=shc$atoms$resname, x=centers$x1, y=centers$x2, z=centers$x3) %>% unique() %>% subset(recname == "ATOM")
+centers3 = centers2[,2:6]
+centers3
+```
+
+## Use the protein structure to create a "study region" and map the residues into the study region
+
+
+
+```{r spatial analysis}
+#generating the boundaries of the space
+xmin = min(centers3$x)
+xmax = max(centers3$x)
+ymin = min(centers3$y)
+ymax = max(centers3$y)
+zmin = min(centers3$z)
+zmax = max(centers3$z)
+
+#creating some random mutations
+mutations = rbinom(619,1,0.1)
+shcmutations = mutate(centers3, mutation = mutations)
+
+#create the point pattern object
+bounds = box3(xrange=c(xmin,xmax), yrange=c(ymin,ymax), zrange=c(zmin,zmax), unitname="A")
+shcstructure = pp3(shcmutations$x, shcmutations$y, shcmutations$z, bounds, marks=shcmutations$mutation)
+
+#examine the point pattern object
+plot(shcstructure)
+mean(nndist(shcstructure))
+plot(K3est(shcstructure))
+
+#make an object with only the mutation pattern
+mutationsub = subset(shcmutations, mutation == 1)
+mutationstructure = pp3(mutationsub$x, mutationsub$y, mutationsub$z, bounds)
+plot(mutationstructure)
+mean(nndist(mutationstructure))
+Ripl = K3est(mutationstructure, rmax=15)
+plot(Ripl)
+
+
+#wind = ripras(shcstructure, shape="convex")
+#plot(Smooth(shcstructure))
+```
+empirical line above theoretical line = aggregation
+empirical line below theoretical line = overdispersion
+
