@@ -5,17 +5,17 @@ date: "7/22/2019"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+``` {r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## Setting up R
+## 0  Setting up R
 
 Install the necessary packages and load their libraries
 
-```{r warning=FALSE, message=FALSE}
-pkgs_needed = c("Rpdb", "rgl", "tidyverse", "spatstat", "Biostrings",
-                "RColorBrewer", "magrittr", "plyr", "reshape2")
+``` {r warning=FALSE, message=FALSE}
+pkgs_needed = c("Rpdb", "rgl", "tidyverse", "spatstat", "sp", "Biostrings",
+                "RColorBrewer", "magrittr", "plyr", "reshape2", "alphashape3d", "geomorph", "ade4", "alphahull", "ggplot2", "rowr", "Rtsne")
 letsinstall = setdiff(pkgs_needed, installed.packages()) 
 if (length(letsinstall) > 0) {
   BiocManager::install(setdiff(pkgs_needed, installed.packages()))
@@ -25,76 +25,519 @@ library("Rpdb")
 library("rgl")
 #library("bio3d")
 library("dplyr")
+library("sp")
 library("spatstat")
-
+library("alphashape3d")
+library("geomorph")
+library("ade4")
+library("alphahull")
+library("ggplot2")
+library("rowr")
+library("Rtsne")
 ```
 
-## Getting alignment into R
+## 1  Loading data
 
-The amino acid alignment is loaded in a silly format, will improve this later. The format is a csv file where each line is of the format "Seqname,site1,site2,site3,...,siten" and indels are represented with dashes.
+We will load and wrangle two sources of data for this analysis: a protein structure or set of structures, and an alignment of extant and ancestral protein sequences.
+
+### 1.1 Alignment
+
+The alignment should contain all sequences that the user is interested in comparing, named in a way that the user can interpret. I will load an alignment of extant and ancestral triterpenoid cyclases, the result of joint reconstruction of ancestral sequences in PAML (Yang 1997). The alignment CSV file was created in a text editor (Notepad++) from the raw RAML output; the format is a csv file where each line is of the format "Seqname,site1,site2,site3,...,siten" and indels are represented with dashes. Future version of this protocol may have functions for reading alignments from various ancestral sequence reconstruction programs.
 
 ``` {r alignment}
-#library(Biostrings)
-#alignment <- readAAMultipleAlignment(filepath = "C:/Users/Hannah/Documents/Github/mutationmap/cyclase_alignment.fasta")
+#read in the alignment and transpose it to prepare for aligning to protein structure
+alignment = read.csv(file = "C:/Users/Hannah/Documents/Github/mutationmap/tree4_andanc.csv", row.names=1) %>% t() %>% as.data.frame()
 
-aliframe = read.csv(file = "C:/Users/Hannah/Documents/Github/mutationmap/tree4_andanc.csv")
+#to make the PAML output parsable in R, spaces need to be changed to underscores and hash signs need to be removed. This is theoretically greppable (below) but the dataframe is large enough that Rstudio crashes. I did the replacement with find and replace in a text editor before creating the alignment object.
+#gsub(" ", "_", alignment)
+#gsub("#", "", aligment)
 
-#transpose the dataframe prepare for aligning to protein structure
-longali = t(aliframe)
+#To start with, I will look for mutation clustering in the squalene-hopene cyclase (SHC) structure along branches in the SHC clade of the triterpenoid cyclase tree
+shcalignment = subset(alignment, SHC_numbering != "")
+head(names(shcalignment))
+tail(names(shcalignment))
 ```
 
-## Read in protein structure using Rpdb
+### 1.2 Protein structure
 
-```{r pdb file}
+Read in a protein structure (solved by x-ray crystallography, NMR, cryo-EM, etc) from the Protein Data Bank or a local file. These .pdb files list the position of every (non-hydrogen) atom in the protein; we will use the package rpb to calculate the center of geometry for each amino acid residue from the coordinates of its atoms.
+
+``` {r pdb file}
+#read in the protein structure
 shc <- read.pdb("C:/Users/Hannah/Documents/Github/mutationmap/1sqc.pdb")
 
-#calculate the center of geometry of each residue
+#calculate the center of geometry of each amino acid residue in the protein structure
 centers <- centres(shc$atoms, unsplit=TRUE) 
 
 #make a table of the residue sequence number, residue name, and position of its center of geometry in Cartesian space
-centers2 = tibble(recname=shc$atoms$recname, resid=shc$atoms$resid, resname=shc$atoms$resname, x=centers$x1, y=centers$x2, z=centers$x3) %>% unique() %>% subset(recname == "ATOM")
-centers3 = centers2[,2:6]
-centers3
+centers = tibble(recname=shc$atoms$recname, SHC_numbering=shc$atoms$resid, resname=shc$atoms$resname, x=centers$x1, y=centers$x2, z=centers$x3) %>% unique() %>% subset(recname == "ATOM")
+centers = centers[,2:6]
+
+head(centers)
 ```
 
-## Use the protein structure to create a "study region" and map the residues into the study region
+### 1.3 Merge the alignment and structure dataframes
 
+``` {r}
+#dataframe with portion of alignment alignable to protein structure and residue positions
+mmap = merge(x=shcalignment, y=centers, by="SHC_numbering")
 
+#read in mutation pattern from the data
+#rmutations = rbinom(619,1,0.1)
+addmutations = mutate(mmap, smutation = ifelse(node1985 == node2055, FALSE, TRUE), cmutation = ifelse(node2021 == node2120, FALSE, TRUE))
 
-```{r spatial analysis}
+#make a small working dataframe
+relevantcol = c(2, 3205:3210)
+mpp = addmutations[,relevantcol]
+
+head(mpp)
+```
+
+## 2 Create an object that describes the surface of the protein
+
+This will not be useful yet because the current capabilities of the R package Spatstat for analyzing 3D point patterns require a rectangular prism-shaped observation window. But it is pretty, and will be useful when I figure out how to write an extension of spatstat for complex polygons in 3D.
+
+``` {r hull}
+#Create an alpha shape of the protein
+centersmat = as.matrix(centers[,3:5])
+alpha = 5
+hull = ashape3d(centersmat, alpha=alpha)
+plot(hull)
+
+#check that all points are inside the alpha-shape
+all(inashape3d(hull, points=as.matrix(centers[,3:5])))
+
+#extract the surface from the alpha-shape
+surface = as.data.frame(hull$vertex)
+colnames(surface)[5] <- c("fc")
+surface = as.data.frame(cbind(centersmat, as.matrix(surface))) %>% subset(fc > 1)
+
+#push the hull out a bit, about the average length of an amino acid (3-4 A)
+surface = as.matrix(surface[1:3]) %>% scale(center=FALSE, scale=c(0.909,0.909,0.909))%>% ashape3d(alpha=alpha*1.1)
+plot(surface)
+```
+
+## 3 3D Analysis
+
+We can't define a protein-shaped observation window, but we can still observe 3D point patterns in a box shaped observation window. In a box, the globular protein structure itself will appear clustered, but we can measure whether mutation patterns within it are more or less clustered than it.
+
+``` {r 3D}
+
 #generating the boundaries of the space
-xmin = min(centers3$x)
-xmax = max(centers3$x)
-ymin = min(centers3$y)
-ymax = max(centers3$y)
-zmin = min(centers3$z)
-zmax = max(centers3$z)
+xmin = min(mpp$x)
+xmax = max(mpp$x)
+ymin = min(mpp$y)
+ymax = max(mpp$y)
+zmin = min(mpp$z)
+zmax = max(mpp$z)
 
-#creating some random mutations
-mutations = rbinom(619,1,0.1)
-shcmutations = mutate(centers3, mutation = mutations)
-
-#create the point pattern object
+#create the point pattern object and its observation window
 bounds = box3(xrange=c(xmin,xmax), yrange=c(ymin,ymax), zrange=c(zmin,zmax), unitname="A")
-shcstructure = pp3(shcmutations$x, shcmutations$y, shcmutations$z, bounds, marks=shcmutations$mutation)
+shcstructure = pp3(mpp$x, mpp$y, mpp$z, bounds)
 
 #examine the point pattern object
 plot(shcstructure)
 mean(nndist(shcstructure))
-plot(K3est(shcstructure))
 
-#make an object with only the mutation pattern
-mutationsub = subset(shcmutations, mutation == 1)
-mutationstructure = pp3(mutationsub$x, mutationsub$y, mutationsub$z, bounds)
-plot(mutationstructure)
-mean(nndist(mutationstructure))
-Ripl = K3est(mutationstructure, rmax=15)
-plot(Ripl)
+#make an object with only the stem mutation pattern
+spp = subset(mpp, smutation == TRUE)
+sp3 = pp3(spp$x, spp$y, spp$z, bounds)
+plot(sp3)
+mean(nndist(sp3))
+
+#make an object with onle the crown group mutation pattern
+cpp = subset(mpp, cmutation == TRUE)
+cp3 = pp3(cpp$x, cpp$y, cpp$z, bounds)
+plot(cp3)
+mean(nndist(cp3))
+
+#visually compare the stem and crown group mutation patterns to the overall protein structure for F, G, and K statistics
+#F<Fpois suggests clustered, F>Fpois suggests uniform
+#G>Gpois suggests clustered, G<Gpois suggests uniform
+#K>Kpois suggests clustered, K<Kpois suggests uniform
+
+protF3 = F3est(shcstructure)
+protG3 = G3est(shcstructure)
+protK3 = K3est(shcstructure)
+
+sF3 = F3est(sp3)
+sG3 = G3est(sp3)
+sK3 = K3est(sp3)
+
+cF3 = F3est(cp3)
+cG3 = G3est(cp3)
+cK3 = K3est(cp3)
+
+Fplot = cbind(protF3$r, protF3$theo, protF3$cs, sF3$cs, cF3$cs) %>% as.data.frame() 
+colnames(Fplot) <- c("r", "pois", "prot", "s", "c")
+Fplot = subset(Fplot, r<10)
+
+Gplot = cbind(protG3$r, protG3$theo, protG3$rs, sG3$rs, cG3$rs) %>% as.data.frame() 
+colnames(Gplot) <- c("r", "pois", "prot", "s", "c")
+Gplot = subset(Gplot, r<10)
+
+Kplot = cbind(protK3$r, protK3$theo, protK3$trans, sK3$trans, cK3$trans) %>% as.data.frame() 
+colnames(Kplot) <- c("r", "pois", "prot", "s", "c")
+Kplot = subset(Kplot, r<10)
+
+ggplot(Fplot) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="protein")) + geom_line(aes(x=r, y=s, color="stem")) + geom_line(aes(x=r, y=c, color="crown")) + scale_color_manual(values = c("pois"="black", "protein"="pink", "stem"="red", "crown"="orange")) + theme_classic() + labs(title="F3est") + ylab("F(r)")
+
+ggplot(Gplot) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="protein")) + geom_line(aes(x=r, y=s, color="stem")) + geom_line(aes(x=r, y=c, color="crown")) + scale_color_manual(values = c("pois"="black", "protein"="pink", "stem"="red", "crown"="orange")) + theme_classic() + labs(title="G3est") + ylab("G(r)")
+
+ggplot(Kplot) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="protein")) + geom_line(aes(x=r, y=s, color="stem")) + geom_line(aes(x=r, y=c, color="crown")) + scale_color_manual(values = c("pois"="black", "protein"="pink", "stem"="red", "crown"="orange")) + theme_classic() + labs(title="K3est") + ylab("K(r)")
+
+protEF = envelope(shcstructure, F3est, nsim=19, global=TRUE)
+plot(protEF, main="global envelope for whole-protein F function")
+
+sEF = envelope(sp3, F3est, nsim=19, global=TRUE)
+plot(sEF, main="global envelope for stem MPP F function")
+
+cEF = envelope(cp3, F3est, nsim=19, global=TRUE)
+plot(cEF, main="global envelope for crown MPP F function")
 
 
-#wind = ripras(shcstructure, shape="convex")
-#plot(Smooth(shcstructure))
+protEG = envelope(shcstructure, G3est, nsim=19, global=TRUE)
+plot(protEG, main="global envelope for whole-protein G function")
+
+sEG = envelope(sp3, G3est, nsim=19, global=TRUE)
+plot(sEG, main="global envelope for stem MPP G function")
+
+cEG = envelope(cp3, G3est, nsim=19, global=TRUE)
+plot(cEG, main="global envelope for crown MPP G function")
+
+
+protEK = envelope(shcstructure, K3est, nsim=19, global=TRUE)
+plot(protEK, main="global envelope for whole-protein K function")
+
+sEK = envelope(sp3, K3est, nsim=19, global=TRUE)
+plot(sEK, main="global envelope for stem MPP K function")
+
+cEK = envelope(cp3, K3est, nsim=19, global=TRUE)
+plot(cEK, main="global envelope for crown MPP K function")
 ```
-empirical line above theoretical line = aggregation
-empirical line below theoretical line = overdispersion
 
+## 4 2D Analysis
+
+### 4.1 PCA
+
+``` {r 2D; PCA}
+#perform an unscaled PCA and recreate the dataframe of mutation point patterns
+protpca = dudi.pca(mpp[,3:5], center=TRUE, scale=FALSE, scannf = FALSE, nf=2) 
+
+pcs = cbind(protpca$li, tibble(rows=c(1:619), smutation=mpp$smutation, cmutation=mpp$cmutation))
+
+#create a polygonal window for the 2D protein
+hull = ripras(x=pcs$Axis1, y=pcs$Axis2, f=1.01)
+
+#create the 2D point patterns for stem and crown group mutations
+protp2 = (ppp(x=pcs$Axis1,y=pcs$Axis2,window=hull))
+sp2 = subset(pcs, smutation == TRUE)
+sp2 = ppp(x=sp2$Axis1, y=sp2$Axis2, window=hull)
+cp2 = subset(pcs, cmutation == TRUE)
+cp2 = ppp(x=cp2$Axis1, y=cp2$Axis2, window=hull)
+
+plot(protp2)
+plot(sp2)
+plot(cp2)
+
+#perform F, G, K analysis to see if it agrees with 3D
+protF2 = Fest(protp2)
+protG2 = Gest(protp2)
+protK2 = Kest(protp2)
+
+sF2 = Fest(sp2)
+sG2 = Gest(sp2)
+sK2 = Kest(sp2)
+
+cF2 = Fest(cp2)
+cG2 = Gest(cp2)
+cK2 = Kest(cp2)
+
+
+FNA = cbind.fill(protF2$r, protF2$theo, protF2$cs, sF2$cs, cF2$cs, fill=NA)
+colnames(FNA) <- c("r", "pois", "prot", "s", "c")
+F2plot = subset(FNA, r<10)
+
+GNA = cbind.fill(protG2$r, protG2$theo, protG2$rs, sG2$rs, cG2$rs, fill=NA)
+colnames(GNA) <- c("r", "pois", "prot", "s", "c")
+G2plot = subset(GNA, r<10)
+
+KNA = cbind.fill(protK2$r, protK2$theo, protK2$trans, sK2$trans, cK2$trans, fill=NA)
+colnames(KNA) <- c("r", "pois", "prot", "s", "c")
+K2plot = subset(KNA, r<10)
+
+
+ggplot(F2plot) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="prot")) + geom_line(aes(x=r, y=s, color="s")) + geom_line(aes(x=r, y=c, color="c")) + scale_color_manual(values = c("pois"="black", "prot"="pink", "s"="red", "c"="orange")) + theme_classic() + labs(title="Fest")
+
+ggplot(G2plot) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="prot")) + geom_line(aes(x=r, y=s, color="s")) + geom_line(aes(x=r, y=c, color="c")) + scale_color_manual(values = c("pois"="black", "prot"="pink", "s"="red", "c"="orange")) + theme_classic()+ labs(title="Gest")
+
+ggplot(K2plot) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="prot")) + geom_line(aes(x=r, y=s, color="s")) + geom_line(aes(x=r, y=c, color="c")) + scale_color_manual(values = c("pois"="black", "prot"="pink", "s"="red", "c"="orange")) + theme_classic()+ labs(title="Kest")
+
+protEF2 = envelope(protp2, Fest, nsim=19, global=TRUE)
+plot(protEF2, main="global envelope for whole-protein F function")
+
+sEF2 = envelope(sp2, Fest, nsim=19, global=TRUE)
+plot(sEF2, main="global envelope for stem MPP F function")
+
+cEF2 = envelope(cp2, Fest, nsim=19, global=TRUE)
+plot(cEF2, main="global envelope for crown MPP F function")
+
+
+protEG2 = envelope(protp2, Gest, nsim=19, global=TRUE)
+plot(protEG2, main="global envelope for whole-protein G function")
+
+sEG2 = envelope(sp2, Gest, nsim=19, global=TRUE)
+plot(sEG2, main="global envelope for stem MPP G function")
+
+cEG2 = envelope(cp2, Gest, nsim=19, global=TRUE)
+plot(cEG2, main="global envelope for crown MPP G function")
+
+
+protEK2 = envelope(protp2, Kest, nsim=19, global=TRUE)
+plot(protEK2, main="global envelope for whole-protein K function")
+
+sEK2 = envelope(sp2, Kest, nsim=19, global=TRUE)
+plot(sEK2, main="global envelope for stem MPP K function")
+
+cEK2 = envelope(cp2, Kest, nsim=19, global=TRUE)
+plot(cEK2, main="global envelope for crown MPP K function")
+```
+
+``` {r 2D; PCA; no edge corr}
+
+protF2nc = Fest(protp2, correction="none")
+protG2nc = Gest(protp2, correction="none")
+protK2nc = Kest(protp2, correction="none")
+
+sF2nc = Fest(sp2, correction="none")
+sG2nc = Gest(sp2, correction="none")
+sK2nc = Kest(sp2, correction="none")
+
+cF2nc = Fest(cp2, correction="none")
+cG2nc = Gest(cp2, correction="none")
+cK2nc = Kest(cp2, correction="none")
+
+
+FNAnc = cbind.fill(protF2nc$r, protF2nc$theo, protF2nc$raw, sF2nc$raw, cF2nc$raw, fill=NA)
+colnames(FNAnc) <- c("r", "pois", "prot", "s", "c")
+F2plotnc = subset(FNAnc, r<10)
+
+GNAnc = cbind.fill(protG2nc$r, protG2nc$theo, protG2nc$raw, sG2nc$raw, cG2nc$raw, fill=NA)
+colnames(GNAnc) <- c("r", "pois", "prot", "s", "c")
+G2plotnc = subset(GNAnc, r<10)
+
+KNAnc = cbind.fill(protK2nc$r, protK2nc$theo, protK2nc$un, sK2nc$un, cK2nc$un, fill=NA)
+colnames(KNAnc) <- c("r", "pois", "prot", "s", "c")
+K2plotnc = subset(KNAnc, r<6)
+
+
+ggplot(F2plotnc) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="prot")) + geom_line(aes(x=r, y=s, color="s")) + geom_line(aes(x=r, y=c, color="c")) + scale_color_manual(values = c("pois"="black", "prot"="pink", "s"="red", "c"="orange")) + theme_classic() + labs(title="Fest with no edge correction")
+
+ggplot(G2plotnc) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="prot")) + geom_line(aes(x=r, y=s, color="s")) + geom_line(aes(x=r, y=c, color="c")) + scale_color_manual(values = c("pois"="black", "prot"="pink", "s"="red", "c"="orange")) + theme_classic()+ labs(title="Gest with no edge correction")
+
+ggplot(K2plotnc) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="prot")) + geom_line(aes(x=r, y=s, color="s")) + geom_line(aes(x=r, y=c, color="c")) + scale_color_manual(values = c("pois"="black", "prot"="pink", "s"="red", "c"="orange")) + theme_classic()+ labs(title="Kest with no edge correction")
+```
+
+
+``` {r 2D; PCA covar analysis}
+
+sumprotp2 = summary(protp2)
+sumcp2 = summary(cp2)
+sumsp2 = summary(sp2)
+
+plot(density(protp2))
+plot(density(cp2))
+plot(density(sp2))
+
+plot(rpoispp(sumsp2$intensity, win=hull))
+plot(runifpoint(sumsp2$n, win=hull))
+
+#depedence of intensity on covariate
+plot(rhohat(cp2, density(protp2)))
+plot(rhohat(sp2, density(protp2)))
+
+
+#perform basic tests of complete spatial randomness. These quadrat tests are basically useless because they depend on 
+protp2qt = quadrat.test(protp2, nx=3, ny=2, method="MonteCarlo", nsim=50)
+protp2qt
+
+sp2qt = quadrat.test(sp2, nx=3, ny=2, method="MonteCarlo", nsim=50)
+sp2qt
+
+cp2qt = quadrat.test(cp2, nx=3, ny=2, method="MonteCarlo", nsim=50)
+cp2qt
+
+sKS = cdf.test(X=sp2, covariate=density(protp2))
+sKS
+plot(sKS)
+
+cKS = cdf.test(X=cp2, covariate=density(protp2))
+cKS
+plot(cKS)
+
+sB = berman.test(X=sp2, covariate=density(protp2))
+sB
+plot(sB)
+
+cB = berman.test(X=cp2, covariate=density(protp2))
+cB
+plot(cB)
+
+#dependence diagnostics
+#fryplot(protp2)
+#fryplot(sp2)
+#fryplot(cp2)
+
+```
+
+### 4.2 t-SNE
+
+``` {r 2D; tSNE}
+
+protsne = scale(mpp[,3:5], center=TRUE) %>% Rtsne(dims=2, perplexity=50, verbose=FALSE, max_iter=5000)
+
+rows = tibble(rows = c(1:619))
+dftsne = as.data.frame(protsne$Y) %>% setNames(paste0("taxis", 1:2)) %>% cbind(rows)
+tsnes= cbind(dftsne, smutation=mpp$smutation, cmutation=mpp$cmutation)
+
+#create a polygonal window for the 2D protein
+thull = ripras(x=tsnes$taxis1, y=tsnes$taxis2, f=1.01)
+
+#create the 2D point patterns for stem and crown group mutations
+prott2 = (ppp(x=tsnes$taxis1,y=tsnes$taxis2,window=thull))
+st2 = subset(tsnes, smutation == TRUE)
+st2 = ppp(x=st2$taxis1, y=st2$taxis2, window=thull)
+ct2 = subset(tsnes, cmutation == TRUE)
+ct2 = ppp(x=ct2$taxis1, y=ct2$taxis2, window=thull)
+
+plot(prott2)
+plot(st2)
+plot(ct2)
+
+ggplot(dftsne) + geom_point(aes(x=taxis1, y=taxis2, color=rows))
+
+protF2t = Fest(prott2, correction = "none")
+protG2t = Gest(prott2, correction = "none")
+protK2t = Kest(prott2, correction = "none")
+
+sF2t = Fest(st2, correction = "none")
+sG2t = Gest(st2, correction = "none")
+sK2t = Kest(st2, correction = "none")
+
+cF2t = Fest(ct2, correction = "none")
+cG2t = Gest(ct2, correction = "none")
+cK2t = Kest(ct2, correction = "none")
+
+
+FNAt = cbind.fill(protF2t$r, protF2t$theo, protF2t$raw, sF2t$raw, cF2t$raw, fill=NA)
+colnames(FNAt) <- c("r", "pois", "prot", "s", "c")
+F2plott = subset(FNAt, r<10)
+
+GNAt = cbind.fill(protG2t$r, protG2t$theo, protG2t$raw, sG2t$raw, cG2t$raw, fill=NA)
+colnames(GNAt) <- c("r", "pois", "prot", "s", "c")
+G2plott = subset(GNAt, r<10)
+
+KNAt = cbind.fill(protK2t$r, protK2t$theo, protK2t$un, sK2t$un, cK2t$un, fill=NA)
+colnames(KNAt) <- c("r", "pois", "prot", "s", "c")
+K2plott = subset(KNAt, r<6)
+
+
+ggplot(F2plott) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="prot")) + geom_line(aes(x=r, y=s, color="s")) + geom_line(aes(x=r, y=c, color="c")) + scale_color_manual(values = c("pois"="black", "prot"="pink", "s"="red", "c"="orange")) + theme_classic() + labs(title="Fest with no edge correction")
+
+ggplot(G2plott) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="prot")) + geom_line(aes(x=r, y=s, color="s")) + geom_line(aes(x=r, y=c, color="c")) + scale_color_manual(values = c("pois"="black", "prot"="pink", "s"="red", "c"="orange")) + theme_classic()+ labs(title="Gest with no edge correction")
+
+ggplot(K2plott) + geom_line(aes(x=r, y=pois, color="pois")) + geom_line(aes(x=r, y=prot, color="prot")) + geom_line(aes(x=r, y=s, color="s")) + geom_line(aes(x=r, y=c, color="c")) + scale_color_manual(values = c("pois"="black", "prot"="pink", "s"="red", "c"="orange")) + theme_classic()+ labs(title="Kest with no edge correction")
+
+protEF2 = envelope(prott2, Fest, nsim=19, global=TRUE)
+plot(protEF2, main="global envelope for whole-protein F function")
+
+sEF2 = envelope(st2, Fest, nsim=19, global=TRUE)
+plot(sEF2, main="global envelope for stem MPP F function")
+
+cEF2 = envelope(ct2, Fest, nsim=19, global=TRUE)
+plot(cEF2, main="global envelope for crown MPP F function")
+
+
+protEG2 = envelope(prott2, Gest, nsim=19, global=TRUE)
+plot(protEG2, main="global envelope for whole-protein G function")
+
+sEG2 = envelope(st2, Gest, nsim=19, global=TRUE)
+plot(sEG2, main="global envelope for stem MPP G function")
+
+cEG2 = envelope(ct2, Gest, nsim=19, global=TRUE)
+plot(cEG2, main="global envelope for crown MPP G function")
+
+
+protEK2 = envelope(prott2, Kest, nsim=19, global=TRUE)
+plot(protEK2, main="global envelope for whole-protein K function")
+
+sEK2 = envelope(st2, Kest, nsim=19, global=TRUE)
+plot(sEK2, main="global envelope for stem MPP K function")
+
+cEK2 = envelope(ct2, Kest, nsim=19, global=TRUE)
+plot(cEK2, main="global envelope for crown MPP K function")
+```
+
+``` {r 2D; tSNE; covar analysis}
+
+sumprott2 = summary(prott2)
+sumct2 = summary(ct2)
+sumst2 = summary(st2)
+
+plot(density(prott2))
+plot(density(ct2))
+plot(density(st2))
+
+plot(rpoispp(sumst2$intensity, win=thull))
+plot(runifpoint(sumst2$n, win=thull))
+
+#depedence of intensity on covariate
+plot(rhohat(ct2, density(prott2)))
+plot(rhohat(st2, density(prott2)))
+
+
+#perform basic tests of complete spatial randomness
+prott2qt = quadrat.test(prott2, nx=15, ny=7, method="MonteCarlo", nsim=50)
+prott2qt
+
+st2qt = quadrat.test(st2, nx=5, ny=3)
+st2qt
+
+ct2qt = quadrat.test(ct2, nx=5, ny=3)
+ct2qt
+
+stKS = cdf.test(X=st2, covariate=density(prott2))
+stKS
+plot(stKS)
+
+ctKS = cdf.test(X=ct2, covariate=density(prott2))
+ctKS
+plot(ctKS)
+
+stB = berman.test(X=st2, covariate=density(prott2))
+stB
+plot(stB)
+
+ctB = berman.test(X=ct2, covariate=density(prott2))
+ctB
+plot(ctB)
+
+#dependence diagnostics
+#fryplot(prott2)
+#fryplot(st2)
+#fryplot(ct2)
+
+```
+
+## 5 Fit a non-Poisson point process model
+``` {r PCA; nonpois}
+spmT = kppm(sp2, ~1, "Thomas")
+plot(spmT, what="statistic")
+cpmT = kppm(cp2, ~1, "Thomas")
+plot(cpmT, what="statistic")
+
+spmM = kppm(sp2, ~1, "MatClust")
+plot(spmM, what="statistic")
+cpmM = kppm(cp2, ~1, "MatClust")
+plot(cpmM, what="statistic")
+```
