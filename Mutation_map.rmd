@@ -74,6 +74,7 @@ centers = tibble(recname=shc$atoms$recname, SHC_numbering=shc$atoms$resid, resna
 centers = centers[,2:6]
 
 head(centers)
+write.csv(as.data.frame(centers), file="C:/Users/Hannah/Documents/Github/mutationmap/centers.csv")
 ```
 
 ### 1.3 Merge the alignment and structure dataframes
@@ -84,7 +85,7 @@ mmap = merge(x=shcalignment, y=centers, by="SHC_numbering")
 
 #read in mutation pattern from the data
 #rmutations = rbinom(619,1,0.1)
-addmutations = mutate(mmap, smutation = ifelse(node1985 == node2055, FALSE, TRUE), cmutation = ifelse(node2021 == node2120, FALSE, TRUE))
+addmutations = mutate(mmap, smutation = ifelse(node1986 == node2055, FALSE, TRUE), cmutation = ifelse(node2121 == node2120, FALSE, TRUE))
 
 #make a small working dataframe
 relevantcol = c(2, 3205:3210)
