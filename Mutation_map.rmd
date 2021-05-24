@@ -38,7 +38,7 @@ library("Rtsne")
 
 ## 1  Loading data
 
-We will load and wrangle two sources of data for this analysis: a protein structure or set of structures, and an alignment of extant and ancestral protein sequences.
+We will load and wrangle two sources of data for this analysis: a protein structure or set of structures, and an alignment of extant and ancestral  protein sequences.
 
 ### 1.1 Alignment
 
@@ -215,6 +215,13 @@ plot(sEK, main="global envelope for stem MPP K function")
 
 cEK = envelope(cp3, K3est, nsim=19, global=TRUE)
 plot(cEK, main="global envelope for crown MPP K function")
+
+#making a figure for my poster 
+fig3 = tibble(r=protEG$r, protobs=protEG$obs, prottheo=protEG$theo, prothi=protEG$hi, protlo=protEG$lo, stem=sEG$obs, crown=cEG$obs)
+
+ggplot(fig3) + geom_line(aes(x=r, y=protobs, color="Whole protein")) + geom_line(aes(x=r, y=stem, color="Stem")) + geom_line(aes(x=r, y=crown, color="Crown")) #+ scale_color_manual(values = c("Whole protein"="black", "Stem"="pink", "Crown"="red")) + theme_classic() #+ labs(title="G3est") + ylab("G(r)")
+
+
 ```
 
 ## 4 2D Analysis
